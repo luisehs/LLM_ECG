@@ -1,0 +1,7 @@
+torch==2.0.1
+transformers==4.31.0
+wfdb==3.4.0
+pandas==2.0.3
+numpy==1.24.2
+scikit-learn==1.2.2
+matplotlib==3.7.1
