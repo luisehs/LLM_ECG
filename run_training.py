@@ -182,6 +182,7 @@ def test_model(model, test_loader):
     print(f"Test Accuracy: {accuracy * 100:.2f}%")
     return accuracy
 
+print('start:')
 # Create the dataset and dataloader
 dataset = ECGDataset()
 
