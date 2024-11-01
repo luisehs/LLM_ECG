@@ -2,6 +2,7 @@ import os
 import wfdb
 import pandas as pd
 import numpy as np
+import random
 from scipy.fftpack import fft
 import torch
 import torch.nn as nn
@@ -10,8 +11,13 @@ from transformers import AutoModel
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 
+# Check GPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 # Path to PTB-XL data
-data_path = 'L:/physionet.org/files/ptb-xl/1.0.3/'
+# data_path = 'L:/physionet.org/files/ptb-xl/1.0.3/'
+data_path = '/root/cawt/ptb-xl/1.0.3/'
 sampling_rate = 100  # The sampling rate is 100 Hz in PTB-XL
 
 # ---- Load Metadata ----
@@ -27,6 +33,7 @@ def preprocess_ecg(record_path, sampling_rate=100):
 
     # Extract the ECG signals
     ecg_signal = record.p_signal[:, 0]  # Using only the first lead for simplicity
+    ecg_signal = (ecg_signal - np.min(ecg_signal)) / (np.max(ecg_signal) - np.min(ecg_signal))  # Normalizar
 
     # Fourier Transform for frequency domain analysis
     freq_domain = fft(ecg_signal)
@@ -44,10 +51,11 @@ labels = []
 
 for index, row in metadata.iterrows():
     # Path to each ECG file in WFDB format
-    record_path = os.path.join(data_path, row['filename_hr'])
+    record_path = os.path.join(data_path, row['filename_lr'])
     
     # Preprocess the ECG signal
     ecg_signal, _ = preprocess_ecg(record_path)
+    ecg_signal = ecg_signal[::2]
     ecg_signal = np.pad(ecg_signal, (0, 5000 - len(ecg_signal)), 'constant')[:5000]  # Resize to 5000
 
     signals.append(ecg_signal)
@@ -72,7 +80,7 @@ class ECGDataset(Dataset):
 
 # ---- Define the Transformer Model for ECG ----
 class ECGTransformerEncoder(nn.Module):
-    def __init__(self, d_model=5000, nhead=4, num_layers=4):  # Input size adjusted to 5000
+    def __init__(self, d_model=5000, nhead=8, num_layers=8):  # Input size adjusted to 5000
         super(ECGTransformerEncoder, self).__init__()
         self.transformer_encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True),  # Ensure batch_first is True
@@ -80,6 +88,7 @@ class ECGTransformerEncoder(nn.Module):
         )
         # Add a linear layer to reduce the size to 768
         self.linear_reduce = nn.Linear(d_model, 768)
+        self.dropout = nn.Dropout(0.3)  # Añadir Dropout
 
     def forward(self, ecg_embedding):
         if len(ecg_embedding.shape) == 2:  # If input has only two dimensions
@@ -93,7 +102,7 @@ class ECGDiagnosisModel(nn.Module):
     def __init__(self, model_name='emilyalsentzer/Bio_ClinicalBERT'):
         super(ECGDiagnosisModel, self).__init__()
         # Load pretrained Bio_ClinicalBERT model
-        self.bert = AutoModel.from_pretrained(model_name)
+        self.bert = AutoModel.from_pretrained(model_name, force_download=True)
         # Transformer encoder for ECG signals
         self.ecg_transformer = ECGTransformerEncoder()
         # Classification layer
@@ -161,6 +170,33 @@ def train_model(model, dataloader, optimizer, epochs=10):
 
     return loss_history, accuracy_history
 
+# ---- Function to Save ECG Examples as Images ----
+def save_ecg_examples(signals, labels, metadata, num_examples=5):
+    output_folder = "ecg_examples"
+    os.makedirs(output_folder, exist_ok=True)
+    examples = random.sample(range(len(signals)), num_examples)  # Select random indices
+
+    for i, idx in enumerate(examples):
+        signal = signals[idx]
+        report_label = metadata['report'].iloc[idx]  # Get the report label from metadata
+
+        # Plot the ECG signal
+        plt.figure(figsize=(10, 4))
+        plt.plot(signal)
+        plt.title(f"ECG Report: {report_label}")
+        plt.xlabel("Time")
+        plt.ylabel("Amplitude")
+
+        # Save the image
+        output_path = os.path.join(output_folder, f"ecg_example_{i+1}.png")
+        plt.savefig(output_path)
+        plt.close()  # Close the figure to free memory
+
+        print(f"Saved: {output_path}")
+
+# Save 5 examples of ECG signals as images
+save_ecg_examples(signals, labels, metadata, num_examples=5)
+
 # ---- Function to Test the Model on Test Data ----
 def test_model(model, test_loader):
     model.eval()  # Set the model to evaluation mode
@@ -182,7 +218,6 @@ def test_model(model, test_loader):
     print(f"Test Accuracy: {accuracy * 100:.2f}%")
     return accuracy
 
-print('start:')
 # Create the dataset and dataloader
 dataset = ECGDataset()
 
@@ -192,15 +227,15 @@ test_size = len(dataset) - train_size
 train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
 
 # Create dataloaders for training and testing
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
 # Create model and optimizer
 model = ECGDiagnosisModel()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
 # Train the model for 10 epochs
-loss_history, accuracy_history = train_model(model, train_loader, optimizer, epochs=10)
+loss_history, accuracy_history = train_model(model, train_loader, optimizer, epochs=100)
 
 # Test the model on the test set
 test_model(model, test_loader)
